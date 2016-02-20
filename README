@@ -1,4 +1,4 @@
-LogCluster 0.03
+LogCluster 0.04
 
 Introduction
 ------------
@@ -6,8 +6,8 @@ LogCluster is a clustering tool which mines line patterns from textual event
 logs, so that each pattern represents a detected cluster.
 LogCluster has been written in Perl and has been tested on Linux, but it
 should run on any platform with a recent Perl distribution. It requires
-Getopt::Long and Digest::MD5 Perl modules which are included in the standard 
-Perl installation on Linux.
+Getopt::Long, Digest::MD5 Perl and Storable modules which are included in 
+the standard Perl installation on Linux.
 
 Availability and licensing
 --------------------------

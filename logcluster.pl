@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# LogCluster 0.03 - logcluster.pl
-# Copyright (C) 2015 Risto Vaarandi
+# LogCluster 0.04 - logcluster.pl
+# Copyright (C) 2015-2016 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -25,9 +25,7 @@ no warnings 'recursion';
 use vars qw(
   $USAGE
   $aggrsup
-  $candidate
   %candidates
-  $cluster
   %clusters
   $debug
   $facility
@@ -46,6 +44,7 @@ use vars qw(
   $progname
   $ptree
   $ptreesize
+  $readdump
   $rsupport
   $searchregexp
   $separator
@@ -55,18 +54,20 @@ use vars qw(
   $syslogopen
   $template
   $version
-  $wfilter
   $weightf
+  $wfilter
   $wordregexp
   $wreplace
+  $writedump
   $wsearch
-  $wweight
   $wsize
   @wsketch
+  $wweight
 );
 
 use Getopt::Long;
 use Digest::MD5 qw(md5);
+use Storable;
 
 $syslogavail = eval { require Sys::Syslog };
 
@@ -202,7 +203,6 @@ sub find_frequent_words {
     }
 
     while (<FILE>) {
-      chomp($_);
       $line = process_line($_);
       if (!defined($line)) { next; }
       ++$i;
@@ -252,61 +252,6 @@ sub find_frequent_words {
   log_msg("info", "Total number of frequent words:", scalar(keys %fwords));
 }
 
-# This function makes a pass over the data set, finds dependencies between 
-# frequent words and stores them to %fword_deps hash table.
-
-sub find_freq_word_deps {
-
-  my($ifile, $line, $word, $word2, $i);
-  my(@words, %words);
-
-  foreach $word (keys %fwords) { $fword_deps{$word} = {}; }
-
-  foreach $ifile (@inputfiles) {
-
-    if (!open(FILE, $ifile)) {
-      log_msg("err", "Can't open input file $ifile: $!");
-      exit(1);
-    }
-
-    while (<FILE>) {
-      chomp($_);
-      $line = process_line($_);
-      if (!defined($line)) { next; }
-      @words = split(/$sepregexp/, $line);
-      %words = map { $_ => 1 } @words;
-      @words = ();
-      foreach $word (keys %words) {
-        if (exists($fwords{$word})) {
-          push @words, $word;
-        } elsif (defined($wfilter) && $word =~ /$wordregexp/) {
-          $word =~ s/$searchregexp/$wreplace/g;
-          if (exists($fwords{$word})) { push @words, $word; }
-        }
-      }
-      foreach $word (@words) {
-        foreach $word2 (@words) { ++$fword_deps{$word}->{$word2}; }
-      }
-    }
-
-    close(FILE);
-  }
-
-  $i = 0;
-  foreach $word (keys %fwords) { 
-    foreach $word2 (keys %{$fword_deps{$word}}) {
-      $fword_deps{$word}->{$word2} /= $fwords{$word};
-      ++$i;
-      if ($debug) {
-        log_msg("debug", "Dependency $word -> $word2:", 
-                         $fword_deps{$word}->{$word2});
-      }
-    } 
-  }
-
-  log_msg("info", "Total number of frequent word dependencies:", $i);
-}
-
 # This function logs the description for candidate parameter1.
 
 sub print_candidate {
@@ -334,12 +279,14 @@ sub print_candidate {
 }
 
 # This function makes a pass over the data set, identifies cluster candidates
-# and stores them to %candidates hash table.
+# and stores them to %candidates hash table. If the --wweight command line
+# option has been provided, dependencies between frequent words are also
+# identified during the data pass and stored to %fword_deps hash table.
 
 sub find_candidates {
 
-  my($ifile, $line, $word, $varnum, $candidate, $index, $total);
-  my(@words, @candidate, @vars);
+  my($ifile, $line, $word, $word2, $varnum, $candidate, $index, $total, $i);
+  my(@words, %words, @candidate, @vars);
 
   foreach $ifile (@inputfiles) {
 
@@ -379,6 +326,21 @@ sub find_candidates {
       push @vars, $varnum;
 
       if (scalar(@candidate)) {
+
+        # if --wweight option was given, store word dependency information
+        # (word co-occurrence counts) to %fword_deps
+
+        if (defined($wweight)) {
+          %words = map { $_ => 1 } @candidate;
+          @words = keys %words;
+          foreach $word (@words) {
+            foreach $word2 (@words) { ++$fword_deps{$word}->{$word2}; }
+          }
+        }
+
+        # if the given candidate already exists, increase its support and
+        # adjust its wildcard information, otherwise create a new candidate
+
         $candidate = join("\n", @candidate);
         if (!exists($candidates{$candidate})) {
           $candidates{$candidate} = {};
@@ -407,6 +369,24 @@ sub find_candidates {
     }
 
     close(FILE);
+  }
+
+  # if --wweight option was given, convert word dependency information
+  # (word co-occurrence counts) into range 0..1
+
+  if (defined($wweight)) {
+    $i = 0;
+    foreach $word (keys %fwords) { 
+      foreach $word2 (keys %{$fword_deps{$word}}) {
+        $fword_deps{$word}->{$word2} /= $fwords{$word};
+        ++$i;
+        if ($debug) {
+          log_msg("debug", "Dependency $word -> $word2:", 
+                           $fword_deps{$word}->{$word2});
+        }
+      } 
+    }
+    log_msg("info", "Total number of frequent word dependencies:", $i);
   }
 
   if ($debug) {
@@ -717,8 +697,9 @@ sub print_weights {
   log_msg("debug", $msg);
 }
 
-# This function joins similar cluster candidates by words with insufficient 
-# weights. The joined candidates are written into the %clusters hash table.
+# This function joins the cluster candidate parameter1 to a suitable cluster
+# by words with insufficient weights. If there is no suitable cluster, 
+# a new cluster is created from the candidate.
 
 sub join_candidate {
 
@@ -772,6 +753,28 @@ sub join_candidate {
   $clusters{$cluster}->{"Count"} += $candidates{$candidate}->{"Count"};
 } 
 
+# This function joins frequent cluster candidates into final clusters
+# by words with insufficient weights. For each candidate, word weights
+# are first calculated and the candidate is then compared to already
+# existing clusters, in order to find a suitable cluster for joining.
+# If no such cluster exists, a new cluster is created from the candidate.
+
+sub join_candidates {
+
+  my($candidate);
+
+  foreach $candidate (sort { $candidates{$b}->{"Count"} <=>
+                             $candidates{$a}->{"Count"} } keys %candidates) {
+    if ($weightf == 1) {
+      find_weights($candidate);
+    } else {
+      find_weights2($candidate);
+    }
+    if ($debug) { print_weights($candidate); }
+    join_candidate($candidate);
+  }
+}
+
 # This function prints the cluster parameter1 to standard output.
 
 sub print_cluster {
@@ -807,6 +810,20 @@ sub print_cluster {
   print "\n\n";
 }
 
+# This function prints all clusters to standard output.
+
+sub print_clusters {
+
+  my($cluster);
+
+  foreach $cluster (sort { $clusters{$b}->{"Count"} <=>
+                           $clusters{$a}->{"Count"} } keys %clusters) {
+    print_cluster($cluster);
+  }
+
+  log_msg("info", "Total number of clusters:", scalar(keys %clusters));
+}
+
 ######################### Main program #########################
 
 $progname = (split(/\//, $0))[-1];
@@ -827,6 +844,8 @@ Options:
   --wsearch=<word_search_regexp>
   --wreplace=<word_replace_string>
   --outliers=<outlier_file>
+  --readdump=<dump_file>
+  --writedump=<dump_file>
   --aggrsup
   --debug
   --help, -?
@@ -923,6 +942,11 @@ and 'Interface eth1 unstable' are detected where the weights of 'Interface'
 and 'unstable' are sufficient in both clusters, but the weights of 'eth0'
 and 'eth1' are smaller than the word weight threshold, the clusters are
 joined into a new cluster 'Interface (eth0|eth1) unstable'.
+In order to quickly evaluate different word weight threshold values and
+word weight functions on the same set of clusters, clusters and word
+dependency information can be dumped into a file during the first run of
+the algorithm, in order to reuse these data during subsequent runs
+(see --readdump and --writedump options).
 
 --weightf=<word_weight_function>
 This option takes an integer for its value which denotes a word weight 
@@ -958,6 +982,19 @@ while --wsearch and --wreplace are ignored without --wfilter.
 --outliers=<outlier_file>
 If this option is given, an additional pass over input files is made, in order 
 to find outliers. All outlier lines are written to the given file.
+
+--readdump=<dump_file>
+Read clusters and frequent word dependencies from a dump file <dump_file>
+that has been previously created with the --writedump option. This option 
+is useful for quick evaluation of different word weight thresholds and word
+weight functions (see --wweight and --weightf options), without the need of 
+repeating the entire clustering process during each evaluation.
+This option can not be used without --wweight option.
+
+--writedump=<dump_file>
+Write clusters and frequent word dependencies to a dump file <dump_file>.
+This file can be used during later runs of the algorithm, in order to quickly
+evaluate different word weight thresholds and functions for joining clusters.
 
 --aggrsup
 If this option is given, for each cluster candidate other candidates are
@@ -1000,6 +1037,8 @@ GetOptions( "input=s" => \@inputfilepat,
             "wsearch=s" => \$wsearch,
             "wreplace=s" => \$wreplace,
             "outliers=s" => \$outlierfile,
+            "readdump=s" => \$readdump,
+            "writedump=s" => \$writedump,
             "aggrsup" => \$aggrsup,
             "debug" => \$debug,
             "help|?" => \$help,
@@ -1015,7 +1054,7 @@ if (defined($help)) {
 # print the version number if requested
 
 if (defined($version)) {
-  print "LogCluster version 0.03, Copyright (C) 2015 Risto Vaarandi\n";
+  print "LogCluster version 0.04, Copyright (C) 2015-2016 Risto Vaarandi\n";
   exit(0);
 }
 
@@ -1026,6 +1065,57 @@ if (defined($facility)) {
     Sys::Syslog::openlog($progname, "pid", $facility);
     $syslogopen = 1;
   }
+}
+
+# exit if improper value is given for --wweight option
+
+if (defined($wweight) && ($wweight <= 0 || $wweight > 1)) {
+  log_msg("err", "Please specify a positive real number not greater than 1 with --wweight option");
+  exit(1);
+}
+
+# if --wweight option is given but --weightf is not, set it to default
+
+if (defined($wweight) && !defined($weightf)) {
+  $weightf = 1;
+}
+
+# exit if improper value is given for --weightf option
+
+if (defined($weightf) && ($weightf < 1 || $weightf > 2)) {
+  log_msg("err", 
+  "Please specify integer number from the range 1..2 with --weightf option");
+  exit(1);
+}
+
+# exit if --readdump and --writedump options are used simultaneously
+
+if (defined($readdump) && defined($writedump)) {
+  log_msg("err", "--readdump and --writedump options can't be used together");
+  exit(1);
+}
+
+# if the --readdump option has been given, use the dump file for producing
+# quick output without considering other command line options
+
+if (defined($readdump)) {
+
+  if (!defined($wweight)) { 
+    log_msg("err", "--readdump option requires --wweight");
+    exit(1);
+  }
+
+  my $ref = retrieve($readdump);
+
+  %candidates = %{$ref->{"Candidates"}};
+  %fword_deps = %{$ref->{"FwordDeps"}};
+
+  $ref = undef;
+
+  join_candidates();
+  print_clusters();
+
+  exit(0);
 }
 
 # check the support value
@@ -1159,12 +1249,9 @@ find_frequent_words();
 
 if (defined($wsize)) { @wsketch = (); }
 
-# if --wweight or --wweight2 option has been given, make a pass over the data 
-# set and find dependencies between frequent words
-
-if (defined($wweight)) { find_freq_word_deps(); }
-
-# make a pass over the data set and find cluster candidates
+# make a pass over the data set and find cluster candidates; 
+# if --wweight option has been given, dependencies between frequent 
+# words are also identified during the data pass
 
 find_candidates();
 
@@ -1181,20 +1268,18 @@ if (defined($aggrsup)) {
 
 find_frequent_candidates();
 
+# store hash tables of candidates and frequent word dependencies to file
+
+if (defined($writedump)) {
+  store({ "Candidates" => \%candidates, 
+          "FwordDeps" => \%fword_deps }, $writedump);
+}
+
 # if --wweight option has been given, find the word weights for each 
 # candidate and join candidates
 
 if (defined($wweight)) {
-  foreach $candidate (sort { $candidates{$b}->{"Count"} <=>
-                             $candidates{$a}->{"Count"} } keys %candidates) {
-    if ($weightf == 1) {
-      find_weights($candidate);
-    } else {
-      find_weights2($candidate);
-    }
-    if ($debug) { print_weights($candidate); }
-    join_candidate($candidate);
-  }
+  join_candidates();
 } else {
   %clusters = %candidates;
 }
@@ -1203,12 +1288,7 @@ if (defined($wweight)) {
 
 %candidates = ();
 
-foreach $cluster (sort { $clusters{$b}->{"Count"} <=>
-                         $clusters{$a}->{"Count"} } keys %clusters) {
-  print_cluster($cluster);
-}
-
-log_msg("info", "Total number of clusters:", scalar(keys %clusters));
+print_clusters();
 
 # if --wweight option has been given, release word dependency hash table
 
