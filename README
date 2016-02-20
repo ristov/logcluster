@@ -1,0 +1,30 @@
+LogCluster 0.03
+
+Introduction
+------------
+LogCluster is a clustering tool which mines line patterns from textual event
+logs, so that each pattern represents a detected cluster.
+LogCluster has been written in Perl and has been tested on Linux, but it
+should run on any platform with a recent Perl distribution. It requires
+Getopt::Long and Digest::MD5 Perl modules which are included in the standard 
+Perl installation on Linux.
+
+Availability and licensing
+--------------------------
+LogCluster is available from http://ristov.users.sourceforge.net/logcluster,
+and is distributed under the terms of GNU General Public License version 2
+(see the file COPYING).
+
+Installation
+------------
+After unpacking the source tarball, copy the logcluster.pl program to 
+appropriate directory (e.g., /usr/local/bin).
+
+Help on usage
+-------------
+Execute 'logcluster.pl --help' for seeing detailed help on usage and command
+line options.
+
+Author
+------
+Risto Vaarandi (ristov at users d0t s0urcef0rge d0t net)
