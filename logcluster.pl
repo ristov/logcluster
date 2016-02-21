@@ -989,7 +989,6 @@ that has been previously created with the --writedump option. This option
 is useful for quick evaluation of different word weight thresholds and word
 weight functions (see --wweight and --weightf options), without the need of 
 repeating the entire clustering process during each evaluation.
-This option can not be used without --wweight option.
 
 --writedump=<dump_file>
 Write clusters and frequent word dependencies to a dump file <dump_file>.
@@ -1100,19 +1099,38 @@ if (defined($readdump) && defined($writedump)) {
 
 if (defined($readdump)) {
 
-  if (!defined($wweight)) { 
-    log_msg("err", "--readdump option requires --wweight");
-    exit(1);
-  }
+  # read data from dump file into a buffer referenced by $ref
 
   my $ref = retrieve($readdump);
+
+  # copy the data from buffer to %candidates and %fword_deps hash tables
 
   %candidates = %{$ref->{"Candidates"}};
   %fword_deps = %{$ref->{"FwordDeps"}};
 
+  # since the data read from dump file has been copied to %candidates and
+  # %fword_deps hash tables, free the memory that holds data from dump file
+
   $ref = undef;
 
-  join_candidates();
+  # if --wweight option has been given but no word dependency info
+  # was found in dump file, exit with error
+
+  if (defined($wweight) && scalar(keys %fword_deps) == 0) { 
+    log_msg("err", "No word dependency information was found in dump file",
+            $readdump, "which is required by --wweight option");
+    exit(1);
+  }
+
+  # if --wweight option has been given, find the word weights for each 
+  # candidate and join candidates
+
+  if (defined($wweight)) {
+    join_candidates();
+  } else {
+    %clusters = %candidates;
+  }
+
   print_clusters();
 
   exit(0);
