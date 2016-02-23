@@ -730,8 +730,6 @@ sub join_candidate {
     $clusters{$cluster}->{"WordCount"} = 
                                $candidates{$candidate}->{"WordCount"};
     $clusters{$cluster}->{"Count"} = 0;
-    $clusters{$cluster}->{"Weights"} = 
-                               [ @{$candidates{$candidate}->{"Weights"}} ];
   }
 
   for ($i = 0; $i < $n; ++$i) {
