@@ -25,8 +25,10 @@ no warnings 'recursion';
 use vars qw(
   $USAGE
   $aggrsup
+  $ansicoloravail
   %candidates
   %clusters
+  $color
   $debug
   $facility
   $fpat
@@ -69,6 +71,7 @@ use Getopt::Long;
 use Digest::MD5 qw(md5);
 use Storable;
 
+$ansicoloravail = eval { require Term::ANSIColor };
 $syslogavail = eval { require Sys::Syslog };
 
 
@@ -727,6 +730,8 @@ sub join_candidate {
     $clusters{$cluster}->{"WordCount"} = 
                                $candidates{$candidate}->{"WordCount"};
     $clusters{$cluster}->{"Count"} = 0;
+    $clusters{$cluster}->{"Weights"} = 
+                               [ @{$candidates{$candidate}->{"Weights"}} ];
   }
 
   for ($i = 0; $i < $n; ++$i) {
@@ -790,10 +795,16 @@ sub print_cluster {
     }
     if (ref($clusters{$cluster}->{"Words"}->[$i]) eq "HASH") {
       @keys = keys %{$clusters{$cluster}->{"Words"}->[$i]};
+      if ($ansicoloravail && defined($color)) {
+        print Term::ANSIColor::color($color);
+      }
       if (scalar(@keys) > 1) {
         print "(", join("|", @keys), ") ";
       } else {
         print $keys[0], " ";
+      }
+      if ($ansicoloravail && defined($color)) {
+        print Term::ANSIColor::color("reset");
       }
     } else {
       print $clusters{$cluster}->{"Words"}->[$i], " ";
@@ -846,6 +857,7 @@ Options:
   --outliers=<outlier_file>
   --readdump=<dump_file>
   --writedump=<dump_file>
+  --color[=<color>]
   --aggrsup
   --debug
   --help, -?
@@ -995,6 +1007,12 @@ Write clusters and frequent word dependencies to a dump file <dump_file>.
 This file can be used during later runs of the algorithm, in order to quickly
 evaluate different word weight thresholds and functions for joining clusters.
 
+--color[=<color>]
+If --wweight option has been used for enabling word weight based heuristic 
+for joining clusters, words with insufficient weight are highlighted in
+detected line patterns with color <color>. If --color option is used without
+a value, it is equivalent to --color=green.
+
 --aggrsup
 If this option is given, for each cluster candidate other candidates are
 identified which represent more specific line patterns. After detecting such
@@ -1038,6 +1056,7 @@ GetOptions( "input=s" => \@inputfilepat,
             "outliers=s" => \$outlierfile,
             "readdump=s" => \$readdump,
             "writedump=s" => \$writedump,
+            "color:s" => \$color,
             "aggrsup" => \$aggrsup,
             "debug" => \$debug,
             "help|?" => \$help,
@@ -1248,6 +1267,10 @@ if (defined($weightf) && ($weightf < 1 || $weightf > 2)) {
   "Please specify integer number from the range 1..2 with --weightf option");
   exit(1);
 }
+
+# if --color option is given without a value, assume --color=green
+
+if (defined($color) && !length($color)) { $color = "green"; }
 
 ##### start the clustering process #####
 
