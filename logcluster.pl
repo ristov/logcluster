@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# LogCluster 0.04 - logcluster.pl
+# LogCluster 0.05 - logcluster.pl
 # Copyright (C) 2015-2016 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -606,7 +606,7 @@ sub find_outliers {
 
       if (scalar(@candidate)) {
         $candidate = join("\n", @candidate);
-        if (exists($clusters{$candidate})) { next; }
+        if (exists($candidates{$candidate})) { next; }
         if (defined($aggrsup) && exists($outlierpat{$candidate})) { next; }
       }
 
@@ -1111,7 +1111,7 @@ if (defined($help)) {
 # print the version number if requested
 
 if (defined($version)) {
-  print "LogCluster version 0.04, Copyright (C) 2015-2016 Risto Vaarandi\n";
+  print "LogCluster version 0.05, Copyright (C) 2015-2016 Risto Vaarandi\n";
   exit(0);
 }
 
@@ -1356,9 +1356,7 @@ if (defined($wweight)) {
   %clusters = %candidates;
 }
 
-# release the candidate hash table and report clusters
-
-%candidates = ();
+# report clusters
 
 print_clusters();
 
