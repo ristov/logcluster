@@ -894,7 +894,7 @@ sub print_cluster {
     }
     if (ref($clusters{$cluster}->{"Words"}->[$i]) eq "HASH") {
       @wordlist = keys %{$clusters{$cluster}->{"Words"}->[$i]};
-      if ($ansicoloravail && defined($color1)) {
+      if (defined($color1)) {
         print Term::ANSIColor::color($color1);
       }
       if (scalar(@wordlist) > 1) {
@@ -902,14 +902,14 @@ sub print_cluster {
       } else {
         print $wordlist[0], " ";
       }
-      if ($ansicoloravail && defined($color1)) {
+      if (defined($color1)) {
         print Term::ANSIColor::color("reset");
       }
     } else {
       print $clusters{$cluster}->{"Words"}->[$i], " ";
     }
     if (defined($wwprint)) {
-      if ($ansicoloravail && defined($color2)) {
+      if (defined($color2)) {
         print Term::ANSIColor::color($color2);
       }
       print "weight=";
@@ -920,7 +920,7 @@ sub print_cluster {
         print $clusters{$cluster}->{"Weights"}->[$i];
       }
       print " ";
-      if ($ansicoloravail && defined($color2)) {
+      if (defined($color2)) {
         print Term::ANSIColor::color("reset");
       }
     }
@@ -1258,6 +1258,16 @@ if (defined($weightf) && ($weightf < 1 || $weightf > 2)) {
 if (defined($readdump) && defined($writedump)) {
   log_msg("err", "--readdump and --writedump options can't be used together");
   exit(1);
+}
+
+# exit if --color options are given but no Term::ANSIColor module is installed
+
+if (defined($color) || defined($color1) || defined($color2)) {
+  if (!$ansicoloravail) {
+    log_msg("err", 
+    "--color* options require Term::ANSIColor module which is not installed");
+    exit(1);
+  }
 }
 
 # if --color option is given, set --color1 and --color2 to default values
