@@ -31,6 +31,8 @@ use vars qw(
   $color
   $color1
   $color2
+  $csize
+  @csketch
   $debug
   $facility
   $fpat
@@ -98,6 +100,14 @@ sub log_msg {
 
 sub hash_string {
   return unpack('L', md5($_[0])) % $wsize;
+}
+
+# This function hashes the candidate ID given with parameter1 to an integer
+# in the range (0...$csize-1) and returns the integer. The $csize integer
+# can be set with the --csize command line option.
+
+sub hash_candidate {
+  return unpack('L', md5($_[0])) % $csize;
 }
 
 # This function matches the line given with parameter1 with a regular
@@ -258,6 +268,57 @@ sub find_frequent_words {
   log_msg("info", "Total number of frequent words:", scalar(keys %fwords));
 }
 
+sub build_candidate_sketch {
+
+  my($ifile, $line, $word, $candidate, $index, $i);
+  my(@words, @candidate);
+
+  for ($index = 0; $index < $csize; ++$index) { $csketch[$index] = 0; }
+
+  foreach $ifile (@inputfiles) {
+
+    if (!open(FILE, $ifile)) {
+      log_msg("err", "Can't open input file $ifile: $!");
+      exit(1);
+    }
+
+    while (<FILE>) {
+
+      $line = process_line($_);
+      if (!defined($line)) { next; }
+
+      @words = split(/$sepregexp/, $line);
+      @candidate = ();
+
+      foreach $word (@words) {
+        if (exists($fwords{$word})) { 
+          push @candidate, $word; 
+        } elsif (defined($wfilter) && $word =~ /$wordregexp/) {
+          $word =~ s/$searchregexp/$wreplace/g;
+          if (exists($fwords{$word})) {
+            push @candidate, $word;
+          } 
+        }
+      }
+
+      if (scalar(@candidate)) {
+        $candidate = join("\n", @candidate);
+        $index = hash_candidate($candidate);
+        ++$csketch[$index];
+      }
+    }
+
+    close(FILE);
+  }
+
+  $i = 0;
+  for ($index = 0; $index < $csize; ++$index) {
+    if ($csketch[$index] >= $support) { ++$i; }
+  }
+
+  log_msg("info", "Candidate sketch successfully built, $i buckets >= $support");
+}
+
 # This function logs the description for candidate parameter1.
 
 sub print_candidate {
@@ -333,6 +394,17 @@ sub find_candidates {
 
       if (scalar(@candidate)) {
 
+        $candidate = join("\n", @candidate);
+
+        # if the candidate sketch has been created previously, check the
+        # sketch bucket that corresponds to the candidate, and if it is
+        # smaller than support threshold, don't consider the candidate
+
+        if (defined($csize)) {
+          $index = hash_candidate($candidate);
+          if ($csketch[$index] < $support) { next; }
+        }
+
         # if --wweight option was given, store word dependency information
         # (word co-occurrence counts) to %fword_deps
 
@@ -347,7 +419,6 @@ sub find_candidates {
         # if the given candidate already exists, increase its support and
         # adjust its wildcard information, otherwise create a new candidate
 
-        $candidate = join("\n", @candidate);
         if (!exists($candidates{$candidate})) {
           $candidates{$candidate} = {};
           $candidates{$candidate}->{"Words"} = [ @candidate ];
@@ -430,11 +501,11 @@ sub insert_into_prefix_tree {
   my($label);
 
   if ($i == $candidates{$cand}->{"WordCount"}) {
-    $label = $candidates{$cand}->{"Vars"}->[$i]->[0] . " " .
+    $label = $candidates{$cand}->{"Vars"}->[$i]->[0] . "\n" .
              $candidates{$cand}->{"Vars"}->[$i]->[1];
   } else {
-    $label = $candidates{$cand}->{"Vars"}->[$i]->[0] . " " .
-             $candidates{$cand}->{"Vars"}->[$i]->[1] . " " .
+    $label = $candidates{$cand}->{"Vars"}->[$i]->[0] . "\n" .
+             $candidates{$cand}->{"Vars"}->[$i]->[1] . "\n" .
              $candidates{$cand}->{"Words"}->[$i];
   }
 
@@ -892,7 +963,8 @@ Options:
   --lfilter=<line_filter_regexp>
   --template=<line_conversion_template>
   --syslog=<syslog_facility>
-  --wsize=<wordsketch_size>
+  --wsize=<word_sketch_size>
+  --csize=<candidate_sketch_size>
   --wweight=<word_weight_threshold>
   --weightf=<word_weight_function>
   --wfilter=<word_filter_regexp>
@@ -966,13 +1038,22 @@ This option can not be used without --lfilter option.
 Log messages about the progress of clustering to syslog, using the given
 facility. For example, --syslog=local2 logs to syslog with local2 facility.
 
---wsize=<wordsketch_size>
+--wsize=<word_sketch_size>
 Instead of finding frequent words by keeping each word with an occurrence
-counter in memory, use a sketch of <wordsketch_size> counters for filtering
+counter in memory, use a sketch of <word_sketch_size> counters for filtering
 out infrequent words from the word frequency estimation process. This
 option requires an additional pass over input files, but can save large 
 amount of memory, since most words in log files are usually infrequent. 
 For example, --wsize=250000 uses a sketch of 250,000 counters for filtering.
+
+--csize=<candidate_sketch_size>
+Instead of finding clusters by keeping each cluster candidate with 
+an occurrence counter in memory, use a sketch of <candidate_sketch_size>
+counters for filtering out cluster candidates which match less than <support>
+lines in input file(s). This option requires an additional pass over input 
+files, but can save memory if many cluster candidates are generated.
+For example, --csize=100000 uses a sketch of 100,000 counters for filtering.
+This option can not be used with --aggrsup option.
 
 --wweight=<word_weight_threshold>
 This option enables word weight based heuristic for joining clusters.
@@ -1082,6 +1163,7 @@ if the given candidate is 'Interface * down' with the support 20, and
 candidates 'Interface eth0 down' (support 10) and 'Interface eth1 down'
 (support 5) are detected as more specific, the support of 'Interface * down'
 will be set to 35 (20+10+5).
+This option can not be used with --csize option.
 
 --debug
 Increase logging verbosity by generating debug output.
@@ -1109,6 +1191,7 @@ GetOptions( "input=s" => \@inputfilepat,
             "template=s" => \$template,
             "syslog=s" => \$facility,
             "wsize=i" => \$wsize,
+            "csize=i" => \$csize,
             "wweight=f" => \$wweight,
             "weightf=i" => \$weightf,
             "wfilter=s" => \$wfilter,
@@ -1328,6 +1411,20 @@ if (defined($wsize) && $wsize < 1) {
   exit(1);
 }
 
+# exit if improper value is given for --csize option
+
+if (defined($csize) && $csize < 1) {
+  log_msg("err", "Please specify positive integer with --csize option");
+  exit(1);
+}
+
+# exit if --csize and --aggrsup options are used together
+
+if (defined($csize) && defined($aggrsup)) {
+  log_msg("err", "--csize and --aggrsup options can't be used together");
+  exit(1);
+}
+
 ##### start the clustering process #####
 
 log_msg("info", "Starting the clustering process...");
@@ -1346,11 +1443,20 @@ find_frequent_words();
 
 if (defined($wsize)) { @wsketch = (); }
 
+# if the --csize command line option has been given, make a pass over
+# the data set and create the candidate sketch data structure @csketch
+
+if (defined($csize)) { build_candidate_sketch(); }
+
 # make a pass over the data set and find cluster candidates; 
 # if --wweight option has been given, dependencies between frequent 
 # words are also identified during the data pass
 
 find_candidates();
+
+# if the --csize command line option has been given, release the candidate sketch
+
+if (defined($csize)) { @csketch = (); }
 
 # if --aggrsup option has been given, find more specific clusters for each
 # cluster, and add supports of more specific clusters to the generic cluster

@@ -1,4 +1,4 @@
-LogCluster 0.05beta
+LogCluster 0.05
 
 Introduction
 ------------
@@ -11,7 +11,7 @@ the standard Perl installation on Linux.
 
 Availability and licensing
 --------------------------
-LogCluster is available from http://ristov.users.sourceforge.net/logcluster,
+LogCluster is available from http://ristov.github.io/logcluster,
 and is distributed under the terms of GNU General Public License version 2
 (see the file COPYING).
 
