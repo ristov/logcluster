@@ -479,14 +479,13 @@ sub build_prefix_tree {
 }
 
 # This function finds more specific candidates for the given candidate with
-# the help of the prefix tree, and adds the supports of such candidates to
-# the given candidate
+# the help of the prefix tree, and records more specific candidates into
+# the SubClusters hash table of the given candidate
 
 sub find_more_specific {
 
   my($node, $cand, $i, $min, $max) = @_;
-  my($candidate, $children, $child);
-  my($candidate2, $cand2);
+  my($candidate, $children, $child, $cand2);
   my($candmin, $candmax);
 
   $candidate = $candidates{$cand};
@@ -503,8 +502,6 @@ sub find_more_specific {
         if ($candmin > $node->{"Min"} + $min || 
             $candmax < $node->{"Max"} + $max) { next; }
         $cand2 = $node->{"Candidate"};
-        $candidate2 = $candidates{$cand2};
-        $candidate->{"Count2"} += $candidate2->{"Count"};
         if ($cand ne $cand2) {
           $candidate->{"SubClusters"}->{$cand2} = 1;
         }
@@ -543,23 +540,51 @@ sub find_more_specific {
 
 sub aggregate_supports {
 
-  my(@keys, $cand, $cand2);
+  my(@keys, @keys2, $cand, $cand2);
 
   @keys = keys %candidates;
 
   foreach $cand (@keys) { 
-    $candidates{$cand}->{"Count2"} = 0;
+
+    $candidates{$cand}->{"OldCount"} = $candidates{$cand}->{"Count"};
+    $candidates{$cand}->{"Count2"} = $candidates{$cand}->{"Count"};
     $candidates{$cand}->{"SubClusters"} = {};
+
     find_more_specific($ptree, $cand, 0, 0, 0);
+    @keys2 = keys %{$candidates{$cand}->{"SubClusters"}};
+
+    foreach $cand2 (@keys2) {
+      $candidates{$cand}->{"Count2"} += $candidates{$cand2}->{"Count"};
+    }
   }
 
   foreach $cand (@keys) {
+
     $candidates{$cand}->{"Count"} = $candidates{$cand}->{"Count2"};
-    if (defined($outlierfile) && $candidates{$cand}->{"Count"} >= $support) {
-      foreach $cand2 (keys %{$candidates{$cand}->{"SubClusters"}}) { 
-        $outlierpat{$cand2} = 1; 
+    @keys2 = keys %{$candidates{$cand}->{"SubClusters"}};
+
+    if (scalar(@keys2)) {
+
+      if (defined($outlierfile) && $candidates{$cand}->{"Count"} >= $support) {
+        foreach $cand2 (@keys2) { $outlierpat{$cand2} = 1; }
+      }
+
+      if ($debug) { 
+        log_msg("debug", 
+                "The support of the following candidate was increased from",
+                $candidates{$cand}->{"OldCount"}, "to",
+                $candidates{$cand}->{"Count"});
+        print_candidate($cand);
+        log_msg("debug", "with the following candidates being more specific:");
+        foreach $cand2 (@keys2) { 
+          print_candidate($cand2); 
+          log_msg("debug", "(original support:", 
+                           $candidates{$cand2}->{"OldCount"}, ")");
+        }
+        log_msg("debug", "----------------------------------------");
       }
     }
+
   }
 }
 
