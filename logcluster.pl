@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# LogCluster 0.05 - logcluster.pl
+# LogCluster 0.06 - logcluster.pl
 # Copyright (C) 2015-2016 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -29,8 +29,6 @@ use vars qw(
   %candidates
   %clusters
   $color
-  $color1
-  $color2
   $csize
   @csketch
   $debug
@@ -69,7 +67,6 @@ use vars qw(
   $wsize
   @wsketch
   $wweight
-  $wwprint
 );
 
 use Getopt::Long;
@@ -829,8 +826,6 @@ sub join_candidate {
     $clusters{$cluster}->{"WordCount"} = 
                                $candidates{$candidate}->{"WordCount"};
     $clusters{$cluster}->{"Count"} = 0;
-    $clusters{$cluster}->{"Weights"} = 
-                               [ @{$candidates{$candidate}->{"Weights"}} ];
   }
 
   for ($i = 0; $i < $n; ++$i) {
@@ -894,35 +889,19 @@ sub print_cluster {
     }
     if (ref($clusters{$cluster}->{"Words"}->[$i]) eq "HASH") {
       @wordlist = keys %{$clusters{$cluster}->{"Words"}->[$i]};
-      if (defined($color1)) {
-        print Term::ANSIColor::color($color1);
+      if (defined($color)) {
+        print Term::ANSIColor::color($color);
       }
       if (scalar(@wordlist) > 1) {
         print "(", join("|", @wordlist), ") ";
       } else {
         print $wordlist[0], " ";
       }
-      if (defined($color1)) {
+      if (defined($color)) {
         print Term::ANSIColor::color("reset");
       }
     } else {
       print $clusters{$cluster}->{"Words"}->[$i], " ";
-    }
-    if (defined($wwprint)) {
-      if (defined($color2)) {
-        print Term::ANSIColor::color($color2);
-      }
-      print "weight=";
-      if (ref($clusters{$cluster}->{"Words"}->[$i]) eq "HASH" &&
-          scalar(@wordlist) > 1) {
-        print "NA";
-      } else {
-        print $clusters{$cluster}->{"Weights"}->[$i];
-      }
-      print " ";
-      if (defined($color2)) {
-        print Term::ANSIColor::color("reset");
-      }
     }
   }
 
@@ -973,10 +952,7 @@ Options:
   --outliers=<outlier_file>
   --readdump=<dump_file>
   --writedump=<dump_file>
-  --wwprint
-  --color1[=<color>]
-  --color2[=<color>]
-  --color
+  --color[=<color>]
   --aggrsup
   --debug
   --help, -?
@@ -1135,25 +1111,11 @@ Write clusters and frequent word dependencies to a dump file <dump_file>.
 This file can be used during later runs of the algorithm, in order to quickly
 evaluate different word weight thresholds and functions for joining clusters.
 
---wwprint
-If --wweight option has been used for enabling word weight based heuristic 
-for joining clusters, include the weight of each word in line patterns when 
-detected line patterns are printed to standard output.
-
---color1[=<color>]
+--color[=<color>]
 If --wweight option has been used for enabling word weight based heuristic 
 for joining clusters, words with insufficient weight are highlighted in
-detected line patterns with color <color>. If --color1 option is used without
-a value, it is equivalent to --color1=green.
-
---color2=[<color>]
-If --wwprint option has been used for including word weights in line patterns,
-highlight the weights with color <color>. If --color2 option is used without
-a value, it is equivalent to --color2=yellow.
-
---color
-Equivalent to "--color1 --color2" (in other words, enable text highlighting
-in detected line patterns with default colors).
+detected line patterns with color <color>. If --color option is used without
+a value, it is equivalent to --color=green.
 
 --aggrsup
 If this option is given, for each cluster candidate other candidates are
@@ -1200,10 +1162,7 @@ GetOptions( "input=s" => \@inputfilepat,
             "outliers=s" => \$outlierfile,
             "readdump=s" => \$readdump,
             "writedump=s" => \$writedump,
-            "wwprint" => \$wwprint,
-            "color1:s" => \$color1,
-            "color2:s" => \$color2,
-            "color" => \$color,
+            "color:s" => \$color,
             "aggrsup" => \$aggrsup,
             "debug" => \$debug,
             "help|?" => \$help,
@@ -1219,7 +1178,7 @@ if (defined($help)) {
 # print the version number if requested
 
 if (defined($version)) {
-  print "LogCluster version 0.05, Copyright (C) 2015-2016 Risto Vaarandi\n";
+  print "LogCluster version 0.06, Copyright (C) 2015-2016 Risto Vaarandi\n";
   exit(0);
 }
 
@@ -1260,30 +1219,17 @@ if (defined($readdump) && defined($writedump)) {
   exit(1);
 }
 
-# exit if --color options are given but no Term::ANSIColor module is installed
+# exit if --color option is given but no Term::ANSIColor module is installed
 
-if (defined($color) || defined($color1) || defined($color2)) {
-  if (!$ansicoloravail) {
-    log_msg("err", 
-    "--color* options require Term::ANSIColor module which is not installed");
-    exit(1);
-  }
+if (defined($color) && !$ansicoloravail) {
+  log_msg("err", 
+  "--color option requires Term::ANSIColor module which is not installed");
+  exit(1);
 }
 
-# if --color option is given, set --color1 and --color2 to default values
+# if --color option is given without a value, assume --color=green
 
-if (defined($color)) {
-  $color1 = "";
-  $color2 = "";
-}
-
-# if --color1 option is given without a value, assume --color1=green
-
-if (defined($color1) && !length($color1)) { $color1 = "green"; }
-
-# if --color2 option is given without a value, assume --color2=yellow
-
-if (defined($color2) && !length($color2)) { $color2 = "yellow"; }
+if (defined($color) && !length($color)) { $color = "green"; }
 
 # if the --readdump option has been given, use the dump file for producing
 # quick output without considering other command line options
