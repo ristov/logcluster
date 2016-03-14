@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# LogCluster 0.07 - logcluster.pl
+# LogCluster 0.08 - logcluster.pl
 # Copyright (C) 2015-2016 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -58,8 +58,10 @@ use vars qw(
   $syslogopen
   $template
   $version
+  @weightfunction
   $weightf
   $wfilter
+  $wildcard
   $wordregexp
   $wreplace
   $writedump
@@ -769,6 +771,41 @@ sub find_weights2 {
   }
 }
 
+# This function inspects the cluster candidate parameter1 and finds the weight
+# of each word in the candidate description. The weights are calculated from
+# word dependency information in a different way than find_weights()
+
+sub find_weights3 {
+
+  my($candidate) = $_[0];
+  my($ref, $total, $word, $word2);
+  my(%weights, @words);
+
+  $ref = $candidates{$candidate}->{"Words"};
+  $candidates{$candidate}->{"Weights"} = [];
+
+  %weights = map { $_ => 0 } @{$ref};
+  @words = keys %weights;
+  $total = scalar(@words) - 1;
+
+  foreach $word (@words) {
+    if (!$total) {
+      $weights{$word} = 1;
+      last;
+    }
+    foreach $word2 (@words) {
+      if ($word eq $word2) { next; } 
+      $weights{$word} += 
+          ($fword_deps{$word2}->{$word} + $fword_deps{$word}->{$word2});
+    }
+    $weights{$word} /= (2 * $total);
+  }
+
+  foreach $word (@{$ref}) {
+    push @{$candidates{$candidate}->{"Weights"}}, $weights{$word};
+  }
+}
+
 # This function prints word weights for cluster candidate parameter1.
 
 sub print_weights {
@@ -852,6 +889,62 @@ sub join_candidate {
   $clusters{$cluster}->{"Count"} += $candidates{$candidate}->{"Count"};
 } 
 
+# This function joins the cluster candidate parameter1 to a suitable cluster
+# by words with insufficient weights. If there is no suitable cluster, 
+# a new cluster is created from the candidate.
+
+sub join_candidate2 {
+
+  my($candidate) = $_[0];
+  my($i, $n, $cluster, @words);
+  my($min, $max, @vars);
+  
+  $n = $candidates{$candidate}->{"WordCount"};
+  $min = 0;
+  $max = 0;
+
+  for ($i = 0; $i < $n; ++$i) {
+    if ($candidates{$candidate}->{"Weights"}->[$i] >= $wweight) {
+      push @words, $candidates{$candidate}->{"Words"}->[$i];
+      push @vars, [ $candidates{$candidate}->{"Vars"}->[$i]->[0] + $min,
+                    $candidates{$candidate}->{"Vars"}->[$i]->[1] + $max ];
+      $min = 0;
+      $max = 0;
+    } else {
+      $min += ($candidates{$candidate}->{"Vars"}->[$i]->[0] + 1);
+      $max += ($candidates{$candidate}->{"Vars"}->[$i]->[1] + 1);
+    }
+  }
+  push @vars, [ $candidates{$candidate}->{"Vars"}->[$i]->[0] + $min,
+                $candidates{$candidate}->{"Vars"}->[$i]->[1] + $max ];
+
+  $cluster = join("\n", @words);
+
+  if (!exists($clusters{$cluster})) {
+
+    $clusters{$cluster} = {};
+    $clusters{$cluster}->{"Words"} = [ @words ];
+    $clusters{$cluster}->{"Vars"} = [ @vars ];
+    $clusters{$cluster}->{"WordCount"} = scalar(@words);
+    $clusters{$cluster}->{"Count"} = $candidates{$candidate}->{"Count"};
+
+  } else {
+
+    $n = $clusters{$cluster}->{"WordCount"} + 1;
+
+    for ($i = 0; $i < $n; ++$i) {
+      if ($clusters{$cluster}->{"Vars"}->[$i]->[0] > $vars[$i]->[0]) {
+        $clusters{$cluster}->{"Vars"}->[$i]->[0] = $vars[$i]->[0];
+      }
+      if ($clusters{$cluster}->{"Vars"}->[$i]->[1] < $vars[$i]->[1]) {
+        $clusters{$cluster}->{"Vars"}->[$i]->[1] = $vars[$i]->[1];
+      }
+    }
+
+    $clusters{$cluster}->{"Count"} += $candidates{$candidate}->{"Count"};
+  }
+} 
+
 # This function joins frequent cluster candidates into final clusters
 # by words with insufficient weights. For each candidate, word weights
 # are first calculated and the candidate is then compared to already
@@ -864,13 +957,13 @@ sub join_candidates {
 
   foreach $candidate (sort { $candidates{$b}->{"Count"} <=>
                              $candidates{$a}->{"Count"} } keys %candidates) {
-    if ($weightf == 1) {
-      find_weights($candidate);
-    } else {
-      find_weights2($candidate);
-    }
+    $weightfunction[$weightf]->($candidate);
     if ($debug) { print_weights($candidate); }
-    join_candidate($candidate);
+    if ($wildcard) { 
+      join_candidate2($candidate); 
+    } else { 
+      join_candidate($candidate);
+    }
   }
 }
 
@@ -931,6 +1024,11 @@ sub print_clusters {
 
 ######################### Main program #########################
 
+$weightfunction[1] = \&find_weights;
+$weightfunction[2] = \&find_weights2;
+$weightfunction[3] = \&find_weights3;
+
+
 $progname = (split(/\//, $0))[-1];
 
 $USAGE = qq!Usage: $progname [options]
@@ -953,6 +1051,7 @@ Options:
   --readdump=<dump_file>
   --writedump=<dump_file>
   --color[=<color>]
+  --wildcard
   --aggrsup
   --debug
   --help, -?
@@ -1076,6 +1175,10 @@ W1,...Wk (p <= k, and if Ui = Uj then i = j). The weight of the word Ui is
 then calculated as follows:
 if p>1 then (dep(U1, Ui) + ... + dep(Up, Ui) - dep(Ui, Ui)) / (p - 1)
 if p=1 then 1
+Value 3 denotes a modification of function 2 which calculates the weight 
+of the word Ui as follows:
+if p>1 then ((dep(U1, Ui) + dep(Ui, U1)) + ... + (dep(Up, Ui) + dep(Ui, Up)) - 2*dep(Ui, Ui)) / 2*(p - 1)
+if p=1 then 1
 
 --wfilter=<word_filter_regexp>
 --wsearch=<word_search_regexp>
@@ -1116,6 +1219,11 @@ If --wweight option has been used for enabling word weight based heuristic
 for joining clusters, words with insufficient weight are highlighted in
 detected line patterns with color <color>. If --color option is used without
 a value, it is equivalent to --color=green.
+
+--wildcard
+If --wweight option has been used for enabling word weight based heuristic 
+for joining clusters, words with insufficient weight in detected line patterns
+are replaced with wildcards.
 
 --aggrsup
 If this option is given, for each cluster candidate other candidates are
@@ -1164,6 +1272,7 @@ GetOptions( "input=s" => \@inputfilepat,
             "writedump=s" => \$writedump,
             "color:s" => \$color,
             "aggrsup" => \$aggrsup,
+            "wildcard" => \$wildcard,
             "debug" => \$debug,
             "help|?" => \$help,
             "version" => \$version );
@@ -1178,7 +1287,7 @@ if (defined($help)) {
 # print the version number if requested
 
 if (defined($version)) {
-  print "LogCluster version 0.07, Copyright (C) 2015-2016 Risto Vaarandi\n";
+  print "LogCluster version 0.08, Copyright (C) 2015-2016 Risto Vaarandi\n";
   exit(0);
 }
 
@@ -1206,9 +1315,8 @@ if (defined($wweight) && !defined($weightf)) {
 
 # exit if improper value is given for --weightf option
 
-if (defined($weightf) && ($weightf < 1 || $weightf > 2)) {
-  log_msg("err", 
-  "Please specify integer number from the range 1..2 with --weightf option");
+if (defined($weightf) && !defined($weightfunction[$weightf])) {
+  log_msg("err", "--weightf option does not support function $weightf");
   exit(1);
 }
 
