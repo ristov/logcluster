@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-# LogCluster 0.06 - logcluster.pl
+# LogCluster 0.07 - logcluster.pl
 # Copyright (C) 2015-2016 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
@@ -842,8 +842,8 @@ sub join_candidate {
       $clusters{$cluster}->{"Vars"}->[$i]->[0] =
       $candidates{$candidate}->{"Vars"}->[$i]->[0];
     }
-    elsif ($clusters{$cluster}->{"Vars"}->[$i]->[1] <
-           $candidates{$candidate}->{"Vars"}->[$i]->[1]) {
+    if ($clusters{$cluster}->{"Vars"}->[$i]->[1] <
+        $candidates{$candidate}->{"Vars"}->[$i]->[1]) {
       $clusters{$cluster}->{"Vars"}->[$i]->[1] =
       $candidates{$candidate}->{"Vars"}->[$i]->[1];
     }
@@ -1178,7 +1178,7 @@ if (defined($help)) {
 # print the version number if requested
 
 if (defined($version)) {
-  print "LogCluster version 0.06, Copyright (C) 2015-2016 Risto Vaarandi\n";
+  print "LogCluster version 0.07, Copyright (C) 2015-2016 Risto Vaarandi\n";
   exit(0);
 }
 
