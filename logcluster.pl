@@ -18,6 +18,29 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #
 
+package main::LogCluster;
+
+sub compile_func {
+
+  my($code) = $_[0];
+  my($ret, $error);
+
+  $ret = eval $code;
+
+  if ($@) {
+    $error = $@;
+    chomp $error;
+    return (0, $error);
+  } elsif (ref($ret) ne "CODE") {
+    return (0, "eval did not return a code reference");
+  } else {
+    return (1, $ret);
+  }
+}
+
+
+package main;
+
 use strict;
 
 no warnings 'recursion';
@@ -29,6 +52,8 @@ use vars qw(
   %candidates
   %clusters
   $color
+  $color1
+  $color2
   $csize
   @csketch
   $debug
@@ -36,11 +61,14 @@ use vars qw(
   $fpat
   %fword_deps
   %fwords
+  %gwords
   $help
   $ifile
   %ifiles
   @inputfilepat
   @inputfiles
+  $lcfunc
+  $lcfuncptr
   $lfilter
   $lineregexp
   $outlierfile
@@ -58,9 +86,12 @@ use vars qw(
   $syslogopen
   $template
   $version
+  $wcfunc
+  $wcfuncptr
   @weightfunction
   $weightf
   $wfilter
+  $wfreq
   $wildcard
   $wordregexp
   $wreplace
@@ -93,6 +124,20 @@ sub log_msg {
   if ($syslogopen) { Sys::Syslog::syslog($level, $msg); }
 }
 
+# This function compiles the function given with parameter1, returning
+# a function pointer if the compilation is successful, and undef otherwise
+
+sub compile_func_wrapper {
+
+  my($code) = $_[0];
+  my($ok, $value);
+
+  ($ok, $value) = main::LogCluster::compile_func($code);
+  if ($ok) { return $value; }
+  log_msg("err", "Failed to compile the code '$code':", $value);
+  return undef;
+}
+
 # This function hashes the string given with parameter1 to an integer
 # in the range (0...$wsize-1) and returns the integer. The $wsize integer
 # can be set with the --wsize command line option.
@@ -118,6 +163,13 @@ sub hash_candidate {
 # replaces the line). If the regular expression $lineregexp does not match
 # the line, 0 is returned, otherwise the line (or converted line, if
 # --template option has been given) is returned.
+# If the --lfilter option has not been given but --lcfunc option is
+# present, the Perl function given with --lcfunc is used for matching
+# and converting the line. If the function returns 'undef', line is
+# regarded non-matching, otherwise the value returned by the function
+# replaces the original line.
+# If neither --lfilter nor --lcfunc option has been given, the line
+# is returned without a trailing newline.
 
 sub process_line {
 
@@ -126,24 +178,33 @@ sub process_line {
 
   chomp($line);
 
-  if (!defined($lfilter)) { return $line; }
+  if (defined($lfilter)) {
 
-  if (!defined($template)) {
-    if ($line =~ /$lineregexp/) { return $line; } else { return undef; }
-  }
+    if (!defined($template)) {
+      if ($line =~ /$lineregexp/) { return $line; } else { return undef; }
+    }
 
-  if (@matches = ($line =~ /$lineregexp/)) {
-    %matches = %+;
-    $matches{"0"} = $line;
-    $i = 1;
-    foreach $match (@matches) { $matches{$i++} = $match; }
-    $line = $template;
-    $line =~ s/\$(?:\$|(\d+)|\{(\d+)\}|\+\{(\w+)\})/
-             !defined($+)?'$':(defined($matches{$+})?$matches{$+}:'')/egx;
+    if (@matches = ($line =~ /$lineregexp/)) {
+      %matches = %+;
+      $matches{"0"} = $line;
+      $i = 1;
+      foreach $match (@matches) { $matches{$i++} = $match; }
+      $line = $template;
+      $line =~ s/\$(?:\$|(\d+)|\{(\d+)\}|\+\{(\w+)\})/
+               !defined($+)?'$':(defined($matches{$+})?$matches{$+}:'')/egx;
+      return $line;
+    }
+
+    return undef;
+
+  } elsif (defined($lcfunc)) {
+
+    $line = eval { $lcfuncptr->($line) };
+    return $line;
+
+  } else {
     return $line;
   }
-
-  return undef;
 }
 
 # This function makes a pass over the data set and builds the sketch 
@@ -152,8 +213,8 @@ sub process_line {
 
 sub build_word_sketch {
 
-  my($index, $ifile, $line, $word, $i);
-  my(@words, %words);
+  my($index, $ifile, $line, $word, $word2, $i);
+  my(@words, @words2, %words);
 
   for ($index = 0; $index < $wsize; ++$index) { $wsketch[$index] = 0; }
 
@@ -180,6 +241,13 @@ sub build_word_sketch {
           $word =~ s/$searchregexp/$wreplace/g;
           $index = hash_string($word);
           ++$wsketch[$index];
+        } elsif (defined($wcfunc)) {
+          @words2 = eval { $wcfuncptr->($word) };
+          foreach $word2 (@words2) { 
+            if (!defined($word2)) { next; }
+            $index = hash_string($word2);
+            ++$wsketch[$index];
+          }
         }
       }
     }
@@ -205,8 +273,8 @@ sub build_word_sketch {
 
 sub find_frequent_words {
 
-  my($ifile, $line, $word, $index, $i);
-  my(@words, %words);
+  my($ifile, $line, $word, $word2, $index, $i);
+  my(@words, @words2, %words);
 
   $i = 0;
 
@@ -232,6 +300,13 @@ sub find_frequent_words {
             $word =~ s/$searchregexp/$wreplace/g;
             $index = hash_string($word);
             if ($wsketch[$index] >= $support) { ++$fwords{$word}; }
+          } elsif (defined($wcfunc)) {
+            @words2 = eval { $wcfuncptr->($word) };
+            foreach $word2 (@words2) { 
+              if (!defined($word2)) { next; }
+              $index = hash_string($word2);
+              if ($wsketch[$index] >= $support) { ++$fwords{$word2}; }
+            }
           }
         }
       } else {
@@ -240,6 +315,12 @@ sub find_frequent_words {
           if (defined($wfilter) && $word =~ /$wordregexp/) {
             $word =~ s/$searchregexp/$wreplace/g;
             ++$fwords{$word};
+          } elsif (defined($wcfunc)) {
+            @words2 = eval { $wcfuncptr->($word) };
+            foreach $word2 (@words2) { 
+              if (!defined($word2)) { next; }
+              ++$fwords{$word2}; 
+            }
           }
         }
       }
@@ -267,10 +348,14 @@ sub find_frequent_words {
   log_msg("info", "Total number of frequent words:", scalar(keys %fwords));
 }
 
+# This function makes a pass over the data set and builds the sketch 
+# @csketch which is used for finding frequent candidates. The sketch contains 
+# $csize counters ($csize can be set with --csize command line option).
+
 sub build_candidate_sketch {
 
-  my($ifile, $line, $word, $candidate, $index, $i);
-  my(@words, @candidate);
+  my($ifile, $line, $word, $word2, $candidate, $index, $i);
+  my(@words, @words2, @candidate);
 
   for ($index = 0; $index < $csize; ++$index) { $csketch[$index] = 0; }
 
@@ -294,9 +379,18 @@ sub build_candidate_sketch {
           push @candidate, $word; 
         } elsif (defined($wfilter) && $word =~ /$wordregexp/) {
           $word =~ s/$searchregexp/$wreplace/g;
-          if (exists($fwords{$word})) {
-            push @candidate, $word;
+          if (exists($fwords{$word})) { 
+            push @candidate, $word; 
           } 
+        } elsif (defined($wcfunc)) {
+          @words2 = eval { $wcfuncptr->($word) };
+          foreach $word2 (@words2) { 
+            if (!defined($word2)) { next; }
+            if (exists($fwords{$word2})) { 
+              push @candidate, $word2; 
+              last;
+            }
+          }
         }
       }
 
@@ -352,7 +446,7 @@ sub print_candidate {
 sub find_candidates {
 
   my($ifile, $line, $word, $word2, $varnum, $candidate, $index, $total, $i);
-  my(@words, %words, @candidate, @vars);
+  my(@words, @words2, %words, @candidate, @vars);
 
   foreach $ifile (@inputfiles) {
 
@@ -385,6 +479,20 @@ sub find_candidates {
           } else {
             ++$varnum;
           }
+        } elsif (defined($wcfunc)) {
+          @words2 = eval { $wcfuncptr->($word) };
+          $i = 0;
+          foreach $word2 (@words2) {
+            if (!defined($word2)) { next; }
+            if (exists($fwords{$word2})) {
+              push @candidate, $word2;
+              push @vars, $varnum;
+              $varnum = 0;
+              $i = 1;
+              last;
+            }
+          }
+          if (!$i) { ++$varnum; }
         } else {
           ++$varnum;
         }
@@ -719,7 +827,7 @@ sub find_outliers {
 
 # This function inspects the cluster candidate parameter1 and finds the weight
 # of each word in the candidate description. The weights are calculated from
-# word dependency information.
+# word dependency information according to --weightf=1.
 
 sub find_weights {
 
@@ -739,7 +847,7 @@ sub find_weights {
 
 # This function inspects the cluster candidate parameter1 and finds the weight
 # of each word in the candidate description. The weights are calculated from
-# word dependency information in a different way than find_weights()
+# word dependency information according to --weightf=2.
 
 sub find_weights2 {
 
@@ -773,9 +881,31 @@ sub find_weights2 {
 
 # This function inspects the cluster candidate parameter1 and finds the weight
 # of each word in the candidate description. The weights are calculated from
-# word dependency information in a different way than find_weights()
+# word dependency information according to --weightf=3.
 
 sub find_weights3 {
+
+  my($candidate) = $_[0];
+  my($ref, $total, $word, $word2, $weight);
+
+  $ref = $candidates{$candidate}->{"Words"};
+  $total = $candidates{$candidate}->{"WordCount"};
+  $candidates{$candidate}->{"Weights"} = [];
+
+  foreach $word (@{$ref}) {
+    $weight = 0;
+    foreach $word2 (@{$ref}) { 
+      $weight += ($fword_deps{$word2}->{$word} + $fword_deps{$word}->{$word2}); 
+    }
+    push @{$candidates{$candidate}->{"Weights"}}, $weight / (2 * $total);
+  }
+}
+
+# This function inspects the cluster candidate parameter1 and finds the weight
+# of each word in the candidate description. The weights are calculated from
+# word dependency information according to --weightf=4.
+
+sub find_weights4 {
 
   my($candidate) = $_[0];
   my($ref, $total, $word, $word2);
@@ -967,13 +1097,43 @@ sub join_candidates {
   }
 }
 
+# This function finds frequent words in detected clusters
+
+sub cluster_freq_words {
+
+  my($cluster, $i, $word, %words);
+  my($threshold, $total, @keys);
+
+  @keys = keys %clusters;
+  $total = scalar(@keys);
+
+  if ($total == 0) { return; }
+
+  foreach $cluster (@keys) {
+    %words = ();
+    for ($i = 0; $i < $clusters{$cluster}->{"WordCount"}; ++$i) {
+      if (ref($clusters{$cluster}->{"Words"}->[$i]) eq "HASH") { next; }
+      $words{$clusters{$cluster}->{"Words"}->[$i]} = 1;
+    }
+    foreach $word (keys %words) { ++$gwords{$word}; }
+  }
+
+  $threshold = $total * $wfreq;
+
+  foreach $word (keys %gwords) { 
+    if ($gwords{$word} < $threshold) { delete $gwords{$word}; } 
+  }
+}
+
 # This function prints the cluster parameter1 to standard output.
 
 sub print_cluster {
 
   my($cluster) = $_[0];
-  my($i, @wordlist);
+  my($i, $word, @wordlist);
   
+  if ($wfreq) { cluster_freq_words(); }
+
   for ($i = 0; $i < $clusters{$cluster}->{"WordCount"}; ++$i) {
     if ($clusters{$cluster}->{"Vars"}->[$i]->[1] > 0) {
       print "*{" . $clusters{$cluster}->{"Vars"}->[$i]->[0] . "," . 
@@ -982,19 +1142,38 @@ sub print_cluster {
     }
     if (ref($clusters{$cluster}->{"Words"}->[$i]) eq "HASH") {
       @wordlist = keys %{$clusters{$cluster}->{"Words"}->[$i]};
-      if (defined($color)) {
-        print Term::ANSIColor::color($color);
-      }
       if (scalar(@wordlist) > 1) {
-        print "(", join("|", @wordlist), ") ";
+        $word = "(" . join("|", @wordlist) . ")";
+        if (defined($color1)) {
+          print Term::ANSIColor::color($color1);
+          print $word, " ";
+          print Term::ANSIColor::color("reset");
+        } else {
+          print $word, " ";
+        }
       } else {
-        print $wordlist[0], " ";
-      }
-      if (defined($color)) {
-        print Term::ANSIColor::color("reset");
+        $word = $wordlist[0];
+        if (defined($color1)) {
+          print Term::ANSIColor::color($color1);
+          print $word, " ";
+          print Term::ANSIColor::color("reset");
+        } elsif (defined($color2) && exists($gwords{$word})) {
+          print Term::ANSIColor::color($color2);
+          print $word, " ";
+          print Term::ANSIColor::color("reset");
+        } else {
+          print $word, " ";
+        }
       }
     } else {
-      print $clusters{$cluster}->{"Words"}->[$i], " ";
+      $word = $clusters{$cluster}->{"Words"}->[$i];
+      if (defined($color2) && exists($gwords{$word})) {
+        print Term::ANSIColor::color($color2);
+        print $word, " ";
+        print Term::ANSIColor::color("reset");
+      } else {
+        print $word, " ";
+      }
     }
   }
 
@@ -1027,6 +1206,7 @@ sub print_clusters {
 $weightfunction[1] = \&find_weights;
 $weightfunction[2] = \&find_weights2;
 $weightfunction[3] = \&find_weights3;
+$weightfunction[4] = \&find_weights4;
 
 
 $progname = (split(/\//, $0))[-1];
@@ -1039,6 +1219,7 @@ Options:
   --separator=<word_separator_regexp>
   --lfilter=<line_filter_regexp>
   --template=<line_conversion_template>
+  --lcfunc=<perl_code>
   --syslog=<syslog_facility>
   --wsize=<word_sketch_size>
   --csize=<candidate_sketch_size>
@@ -1047,6 +1228,7 @@ Options:
   --wfilter=<word_filter_regexp>
   --wsearch=<word_search_regexp>
   --wreplace=<word_replace_string>
+  --wcfunc=<perl_code>
   --outliers=<outlier_file>
   --readdump=<dump_file>
   --writedump=<dump_file>
@@ -1089,6 +1271,7 @@ When clustering log file lines from file(s) given with --input option(s),
 process only lines which match the regular expression. For example,
 --lfilter='sshd\\[\\d+\\]:' finds clusters for log file lines that 
 contain the string sshd[<pid>]: (i.e., sshd syslog messages).
+This option can not be used with --lcfunc option.
 
 --template=<line_conversion_template>
 After the regular expression given with --lfilter option has matched a line,
@@ -1108,6 +1291,24 @@ Please note that <line_conversion_template> supports not only numeric
 match variables (such as \$2 or \${12}), but also named match variables with
 \$+{name} syntax (such as \$+{ip} or \$+{hostname}).
 This option can not be used without --lfilter option.
+
+--lcfunc=<perl_code>
+Similarly to --lfilter and --template options, this option is used for  
+filtering and converting log file lines. This option takes the definition
+of an anonymous perl function for its value. The function receives the log 
+file line as its only input parameter, and the value returned by the function 
+replaces the original log file line. In order to indicate that the line 
+should not be processed, 'undef' must be returned from the function.
+For example, with 
+--lcfunc='sub { if (\$_[0] =~ s/192\\.168\\.\\d{1,3}\\.\\d{1,3}/IP-address/g) { return \$_[0]; } return undef; }'
+only lines that contain the string "192.168.<digits>.<digits>" are considered
+during clustering, and all strings "192.168.<digits>.<digits>" are replaced
+with the string "IP-address" in such lines. Longer filtering and conversion
+functions can be defined in a separate perl module. For example, with
+--lcfunc='require "/home/user/TestModule.pm"; sub { TestModule::myfilter(@_); }'
+all function parameters are passed to the function myfilter() from TestModule,
+and the return value from myfilter() is used during clustering.
+This option can not be used with --lfilter option.
 
 --syslog=<syslog_facility>
 Log messages about the progress of clustering to syslog, using the given
@@ -1175,10 +1376,23 @@ W1,...Wk (p <= k, and if Ui = Uj then i = j). The weight of the word Ui is
 then calculated as follows:
 if p>1 then (dep(U1, Ui) + ... + dep(Up, Ui) - dep(Ui, Ui)) / (p - 1)
 if p=1 then 1
-Value 3 denotes a modification of function 2 which calculates the weight 
+Value 3 denotes a modification of function 1 which calculates the weight 
+of the word Wi as follows:
+((dep(W1, Wi) + dep(Wi, W1)) + ... + (dep(Wk, Wi) + dep(Wi, Wk))) / (2 * k)
+Value 4 denotes a modification of function 2 which calculates the weight 
 of the word Ui as follows:
-if p>1 then ((dep(U1, Ui) + dep(Ui, U1)) + ... + (dep(Up, Ui) + dep(Ui, Up)) - 2*dep(Ui, Ui)) / 2*(p - 1)
+if p>1 then ((dep(U1, Ui) + dep(Ui, U1)) + ... + (dep(Up, Ui) + dep(Ui, Up)) - 2*dep(Ui, Ui)) / (2 * (p - 1))
 if p=1 then 1
+
+--wfreq=<word_frequency_threshold>
+This option enables frequent word identification in detected line patterns.
+The option takes a positive real number not greater than 1 for its value. 
+If the total number of line patterns which are reported to the user is N, 
+the word W is regarded frequent if it appears in K detected line patterns and 
+(K / N) >= <word_frequency_threshold>. Setting <word_frequency_threshold>
+to a higher value allows for identifying words that are shared by many
+detected line patterns (such as hostnames or specific parts of timestamps).
+In order to highlight frequent words in line patterns, use --color option.
 
 --wfilter=<word_filter_regexp>
 --wsearch=<word_search_regexp>
@@ -1198,6 +1412,22 @@ the words 10.1.1.1 and 10.1.1.2:80 are converted into N.N.N.N and N.N.N.N:N
 Note that --wfilter option requires the presence of --wsearch and --wreplace,
 while --wsearch and --wreplace are ignored without --wfilter.
 
+--wcfunc=<perl_code>
+Similarly to --wfilter, --wsearch and --wreplace options, this option is 
+used for generating additional words during the clustering process.
+This option takes the definition of an anonymous perl function for its value.
+The function receives the word as its only input parameter, and returns
+a list of 0 or more words (all 'undef' values in the list are ignored). 
+During the clustering process, the original word is used if it is frequent,
+otherwise the first frequent word from the list replaces the original word.
+For example, with
+--wcfunc='sub { if (\$_[0] =~ /^Chrome\\/(\\d+)/) { return ("Chrome/\$1", "Chrome"); } }'
+the word list ("Chrome/49", "Chrome") is generated for the word
+"Chrome/49.0.2623.87". If words "Chrome/49.0.2623.87" and "Chrome/49" are
+infrequent but "Chrome" is frequent, the word "Chrome" replaces the word
+"Chrome/49.0.2623.87" during the clustering process.
+This option can not be used with --wfilter option.
+
 --outliers=<outlier_file>
 If this option is given, an additional pass over input files is made, in order 
 to find outliers. All outlier lines are written to the given file.
@@ -1214,16 +1444,18 @@ Write clusters and frequent word dependencies to a dump file <dump_file>.
 This file can be used during later runs of the algorithm, in order to quickly
 evaluate different word weight thresholds and functions for joining clusters.
 
---color[=<color>]
+--color[=[<color1>]:[<color2>]]
 If --wweight option has been used for enabling word weight based heuristic 
 for joining clusters, words with insufficient weight are highlighted in
-detected line patterns with color <color>. If --color option is used without
-a value, it is equivalent to --color=green.
+detected line patterns with color <color1>. If --wfreq option has been used
+for finding frequent words in line patterns, frequent words are highlighted
+in detected line patterns with color <color2>. If --color option is used 
+without a value, it is equivalent to --color=green:red.
 
 --wildcard
 If --wweight option has been used for enabling word weight based heuristic 
 for joining clusters, words with insufficient weight in detected line patterns
-are replaced with wildcards.
+are replaced with wildcards when patterns are reported to the user.
 
 --aggrsup
 If this option is given, for each cluster candidate other candidates are
@@ -1259,14 +1491,17 @@ GetOptions( "input=s" => \@inputfilepat,
             "separator=s" => \$separator,
             "lfilter=s" => \$lfilter,
             "template=s" => \$template,
+            "lcfunc=s" => \$lcfunc,
             "syslog=s" => \$facility,
             "wsize=i" => \$wsize,
             "csize=i" => \$csize,
             "wweight=f" => \$wweight,
             "weightf=i" => \$weightf,
+            "wfreq=f" => \$wfreq,
             "wfilter=s" => \$wfilter,
             "wsearch=s" => \$wsearch,
             "wreplace=s" => \$wreplace,
+            "wcfunc=s" => \$wcfunc,
             "outliers=s" => \$outlierfile,
             "readdump=s" => \$readdump,
             "writedump=s" => \$writedump,
@@ -1320,6 +1555,13 @@ if (defined($weightf) && !defined($weightfunction[$weightf])) {
   exit(1);
 }
 
+# exit if improper value is given for --wfreq option
+
+if (defined($wfreq) && ($wfreq <= 0 || $wfreq > 1)) {
+  log_msg("err", "Please specify a positive real number not greater than 1 with --wfreq option");
+  exit(1);
+}
+
 # exit if --readdump and --writedump options are used simultaneously
 
 if (defined($readdump) && defined($writedump)) {
@@ -1335,9 +1577,20 @@ if (defined($color) && !$ansicoloravail) {
   exit(1);
 }
 
-# if --color option is given without a value, assume --color=green
+# if --color option is given with a value, parse the value and set all
+# colors to 'undef' which have not been provided in the value; 
+# if --color option is given without a value, assume "green:red" 
 
-if (defined($color) && !length($color)) { $color = "green"; }
+if (defined($color)) { 
+  if (length($color)) { 
+    ($color1, $color2) = split(/:/, $color);
+    if (!length($color1)) { $color1 = undef; }
+    if (!length($color2)) { $color2 = undef; }
+  } else {
+    $color1 = "green";
+    $color2 = "red";
+  }
+}
 
 # if the --readdump option has been given, use the dump file for producing
 # quick output without considering other command line options
@@ -1430,6 +1683,13 @@ if ($@) {
   exit(1);
 }
 
+# exit if --lfilter and --lcfunc options are used together
+
+if (defined($lfilter) && defined($lcfunc)) {
+  log_msg("err", "--lfilter and --lcfunc options can't be used together");
+  exit(1);
+}
+
 # compile the line filtering regular expression,
 # and exit if the expression is invalid
 
@@ -1442,7 +1702,24 @@ if (defined($lfilter)) {
   }
 }
 
-# compile the word filtering regular expression,
+# compile the line filter function, and exit if the compilation fails
+
+if (defined($lcfunc)) {
+  $lcfuncptr = compile_func_wrapper($lcfunc);
+  if (!defined($lcfuncptr)) {
+    log_msg("err", "Invalid function supplied with --lcfunc option");
+    exit(1);
+  }
+}
+
+# exit if --wfilter and --wcfunc options are used together
+
+if (defined($wfilter) && defined($wcfunc)) {
+  log_msg("err", "--wfilter and --wcfunc options can't be used together");
+  exit(1);
+}
+
+# compile the word filtering regular expression, 
 # and exit if the expression is invalid
 
 if (defined($wfilter)) {
@@ -1464,6 +1741,16 @@ if (defined($wfilter)) {
   }
   if (!defined($wreplace)) { 
     log_msg("err", "--wfilter option requires --wreplace");
+    exit(1);
+  }
+}
+
+# compile the word class function, and exit if the compilation fails
+
+if (defined($wcfunc)) {
+  $wcfuncptr = compile_func_wrapper($wcfunc);
+  if (!defined($wcfuncptr)) {
+    log_msg("err", "Invalid function supplied with --wcfunc option");
     exit(1);
   }
 }
