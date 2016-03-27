@@ -771,8 +771,8 @@ sub aggregate_supports {
 
 sub find_outliers {
 
-  my($ifile, $line, $word, $candidate, $i);
-  my(@words, @candidate);
+  my($ifile, $line, $word, $word2, $candidate, $i);
+  my(@words, @words2, @candidate);
 
   if (!open(OUTLIERFILE, ">$outlierfile")) {
     log_msg("err", "Can't open outlier file $outlierfile: $!");
@@ -803,6 +803,15 @@ sub find_outliers {
           $word =~ s/$searchregexp/$wreplace/g;
           if (exists($fwords{$word})) {
             push @candidate, $word;
+          }
+        } elsif (defined($wcfunc)) {
+          @words2 = eval { $wcfuncptr->($word) };
+          foreach $word2 (@words2) {
+            if (!defined($word2)) { next; }
+            if (exists($fwords{$word2})) {
+              push @candidate, $word2;
+              last;
+            }
           }
         }
       }
