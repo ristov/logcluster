@@ -1,8 +1,9 @@
 package LogClusterUtils;
 
-# sample LogCluster functions for preprocessing input data and creating
-# word classes (the functions have been designed for use with LogCluster
-# --lcfunc and --wcfunc options)
+# Sample LogCluster functions for preprocessing input data and creating
+# word classes. The functions have been designed for use with LogCluster
+# --lcfunc and --wcfunc options, for example:
+# --wcfunc='require "LogClusterUtils.pm"; sub { LogClusterUtils::wordclass(@_) }'
 
 use strict;
 use warnings;
