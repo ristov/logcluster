@@ -1234,6 +1234,7 @@ Options:
   --csize=<candidate_sketch_size>
   --wweight=<word_weight_threshold>
   --weightf=<word_weight_function>
+  --wfreq=<word_frequency_threshold>
   --wfilter=<word_filter_regexp>
   --wsearch=<word_search_regexp>
   --wreplace=<word_replace_string>
