@@ -1369,6 +1369,7 @@ Options:
   --color[=<color>]
   --wildcard
   --wfileint
+  --wordsonly
   --aggrsup
   --debug
   --help, -?
