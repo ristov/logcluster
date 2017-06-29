@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# LogCluster 0.08 - logcluster.pl
-# Copyright (C) 2015-2016 Risto Vaarandi
+# LogCluster 0.09 - logcluster.pl
+# Copyright (C) 2015-2017 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -77,6 +77,7 @@ use vars qw(
   $ptree
   $ptreesize
   $readdump
+  $readwords
   $rsupport
   $searchregexp
   $separator
@@ -85,17 +86,21 @@ use vars qw(
   $syslogavail
   $syslogopen
   $template
+  $totalinputlines
   $version
   $wcfunc
   $wcfuncptr
   @weightfunction
   $weightf
+  $wfileint
   $wfilter
   $wfreq
   $wildcard
   $wordregexp
+  $wordsonly
   $wreplace
   $writedump
+  $writewords
   $wsearch
   $wsize
   @wsketch
@@ -207,13 +212,34 @@ sub process_line {
   }
 }
 
+# This function opens input file and returns a file handle for opened
+# file; if the open fails, the function will call exit(1)
+
+sub open_input_file {
+
+  my($file) = $_[0];
+  my($handle);
+
+  if ($file eq "-") {
+    if (!open($handle, "<&STDIN")) {
+      log_msg("err", "Can't dup standard input: $!");
+      exit(1);
+    }
+  } elsif (!open($handle, $file)) {
+    log_msg("err", "Can't open input file $file: $!");
+    exit(1);
+  }
+
+  return $handle;
+}
+
 # This function makes a pass over the data set and builds the sketch 
 # @wsketch which is used for finding frequent words. The sketch contains 
 # $wsize counters ($wsize can be set with --wsize command line option).
 
 sub build_word_sketch {
 
-  my($index, $ifile, $line, $word, $word2, $i);
+  my($index, $ifile, $line, $word, $word2, $i, $fh);
   my(@words, @words2, %words);
 
   for ($index = 0; $index < $wsize; ++$index) { $wsketch[$index] = 0; }
@@ -222,12 +248,9 @@ sub build_word_sketch {
 
   foreach $ifile (@inputfiles) {
 
-    if (!open(FILE, $ifile)) {
-      log_msg("err", "Can't open input file $ifile: $!");
-      exit(1);
-    }
+    $fh = open_input_file($ifile);
 
-    while (<FILE>) {
+    while (<$fh>) {
       $line = process_line($_);
       if (!defined($line)) { next; }
       ++$i;
@@ -252,7 +275,7 @@ sub build_word_sketch {
       }
     }
 
-    close(FILE);
+    close($fh);
   }
 
   if (!defined($support)) { 
@@ -269,23 +292,21 @@ sub build_word_sketch {
 }
 
 # This function makes a pass over the data set, finds frequent words and 
-# stores them to %fwords hash table.
+# stores them to %fwords hash table. The function returns the total number
+# of lines in input file(s).
 
 sub find_frequent_words {
 
-  my($ifile, $line, $word, $word2, $index, $i);
+  my($ifile, $line, $word, $word2, $index, $i, $fh);
   my(@words, @words2, %words);
 
   $i = 0;
 
   foreach $ifile (@inputfiles) {
 
-    if (!open(FILE, $ifile)) {
-      log_msg("err", "Can't open input file $ifile: $!");
-      exit(1);
-    }
+    $fh = open_input_file($ifile);
 
-    while (<FILE>) {
+    while (<$fh>) {
       $line = process_line($_);
       if (!defined($line)) { next; }
       ++$i;
@@ -326,7 +347,7 @@ sub find_frequent_words {
       }
     }
 
-    close(FILE);
+    close($fh);
   }
 
   if (!defined($support)) { 
@@ -346,6 +367,74 @@ sub find_frequent_words {
   }
 
   log_msg("info", "Total number of frequent words:", scalar(keys %fwords));
+
+  return $i;
+}
+
+# This function reads frequent words from a text file without making a pass 
+# over the data set, and stores them to %fwords hash table.
+
+sub read_frequent_words {
+
+  my($ref);
+
+  if (defined($wfileint)) {
+
+    $ref = retrieve($readwords);
+    %fwords = %{$ref->{"FrequentWords"}};
+
+  } else {
+
+    if (!open(WORDFILE, $readwords)) {
+      log_msg("err", "Can't open word file $readwords: $!");
+      exit(1);
+    }
+
+    while (<WORDFILE>) {
+      chomp;
+      $fwords{$_} = 1;  
+    }
+
+    close(WORDFILE);
+  }
+
+  log_msg("info", "Total number of frequent words:", scalar(keys %fwords),
+                  "(read from $readwords)");
+}
+
+# This function writes frequent words (%fwords hash table) and their 
+# relative supports into a file.
+
+sub write_frequent_words {
+
+  my($lines) = $_[0];
+  my(%rsupports, $word);
+
+  if (defined($wfileint)) {
+
+    if ($lines) {
+      foreach $word (keys %fwords) { 
+        $rsupports{$word} = $fwords{$word} / $lines;
+      }
+    }
+
+    store({ "FrequentWords" => \%fwords, 
+            "RelativeSupports" => \%rsupports }, $writewords);
+
+  } else {
+
+    if (!open(WORDFILE, ">$writewords")) {
+      log_msg("err", "Can't open word file $writewords: $!");
+      exit(1);
+    }
+
+    foreach $word (keys %fwords) { print WORDFILE "$word\n"; }
+
+    close(WORDFILE);
+  }
+
+  log_msg("info", scalar(keys %fwords), 
+                  "frequent words written to $writewords");
 }
 
 # This function makes a pass over the data set and builds the sketch 
@@ -354,22 +443,23 @@ sub find_frequent_words {
 
 sub build_candidate_sketch {
 
-  my($ifile, $line, $word, $word2, $candidate, $index, $i);
+  my($ifile, $line, $word, $word2, $candidate, $index, $i, $fh);
   my(@words, @words2, @candidate);
 
   for ($index = 0; $index < $csize; ++$index) { $csketch[$index] = 0; }
 
+  $i = 0;
+
   foreach $ifile (@inputfiles) {
 
-    if (!open(FILE, $ifile)) {
-      log_msg("err", "Can't open input file $ifile: $!");
-      exit(1);
-    }
+    $fh = open_input_file($ifile);
 
-    while (<FILE>) {
+    while (<$fh>) {
 
       $line = process_line($_);
       if (!defined($line)) { next; }
+
+      ++$i;
 
       @words = split(/$sepregexp/, $line);
       @candidate = ();
@@ -401,7 +491,15 @@ sub build_candidate_sketch {
       }
     }
 
-    close(FILE);
+    close($fh);
+  }
+
+  # if support has not been identified yet (e.g., frequent words were loaded
+  # from file), calculate the support
+
+  if (!defined($support)) { 
+    $support = int($rsupport * $i / 100); 
+    log_msg("info", "Total $i lines read from input sources, using absolute support $support (relative support $rsupport percent)");
   }
 
   $i = 0;
@@ -446,19 +544,20 @@ sub print_candidate {
 sub find_candidates {
 
   my($ifile, $line, $word, $word2, $varnum, $candidate, $index, $total, $i);
-  my(@words, @words2, %words, @candidate, @vars);
+  my(@words, @words2, %words, @candidate, @vars, $linecount, $fh, $n);
+
+  $linecount = 0;
 
   foreach $ifile (@inputfiles) {
 
-    if (!open(FILE, $ifile)) {
-      log_msg("err", "Can't open input file $ifile: $!");
-      exit(1);
-    }
+    $fh = open_input_file($ifile);
 
-    while (<FILE>) {
+    while (<$fh>) {
 
       $line = process_line($_);
       if (!defined($line)) { next; }
+
+      ++$linecount;
 
       @words = split(/$sepregexp/, $line);
       @candidate = ();
@@ -552,17 +651,43 @@ sub find_candidates {
       }
     }
 
-    close(FILE);
+    close($fh);
   }
 
-  # if --wweight option was given, convert word dependency information
-  # (word co-occurrence counts) into range 0..1
+  # if support has not been identified yet (e.g., frequent words were loaded
+  # from file), calculate the support
+
+  if (!defined($support)) { 
+    $support = int($rsupport * $linecount / 100); 
+    log_msg("info", "Total $linecount lines read from input sources, using absolute support $support (relative support $rsupport percent)");
+  }
+
+  # If --wweight option was given, convert word dependency information
+  # (word co-occurrence counts) into range 0..1.
 
   if (defined($wweight)) {
+
     $i = 0;
+
     foreach $word (keys %fwords) { 
+
+      # since %fwords hash can be initialized with frequent words loaded
+      # from file, %fword_deps might not contain information for a frequent
+      # word if it has not been observed in input file
+
+      if (!exists($fword_deps{$word})) { next; }
+
+      # Note that $fword_deps{$word}->{$word} equals to the occurrence count
+      # of $word. Since %fwords hash can be initialized with frequent words 
+      # loaded from file, $fword_deps{$word}->{$word} is used in calculations 
+      # instead of $fwords{$word}.
+
+      $n = $fword_deps{$word}->{$word};
+
+      # convert word dependency information into range 0..1
+
       foreach $word2 (keys %{$fword_deps{$word}}) {
-        $fword_deps{$word}->{$word2} /= $fwords{$word};
+        $fword_deps{$word}->{$word2} /= $n;
         ++$i;
         if ($debug) {
           log_msg("debug", "Dependency $word -> $word2:", 
@@ -771,7 +896,7 @@ sub aggregate_supports {
 
 sub find_outliers {
 
-  my($ifile, $line, $word, $word2, $candidate, $i);
+  my($ifile, $line, $word, $word2, $candidate, $i, $fh);
   my(@words, @words2, @candidate);
 
   if (!open(OUTLIERFILE, ">$outlierfile")) {
@@ -783,12 +908,9 @@ sub find_outliers {
 
   foreach $ifile (@inputfiles) {
 
-    if (!open(FILE, $ifile)) {
-      log_msg("err", "Can't open input file $ifile: $!");
-      exit(1);
-    }
+    $fh = open_input_file($ifile);
 
-    while (<FILE>) {
+    while (<$fh>) {
 
       $line = process_line($_);
       if (!defined($line)) { next; }
@@ -826,7 +948,7 @@ sub find_outliers {
       ++$i;
     }
 
-    close(FILE);
+    close($fh);
   }
 
   close(OUTLIERFILE);
@@ -1098,7 +1220,7 @@ sub join_candidates {
                              $candidates{$a}->{"Count"} } keys %candidates) {
     $weightfunction[$weightf]->($candidate);
     if ($debug) { print_weights($candidate); }
-    if ($wildcard) { 
+    if (defined($wildcard)) { 
       join_candidate2($candidate); 
     } else { 
       join_candidate($candidate);
@@ -1242,8 +1364,11 @@ Options:
   --outliers=<outlier_file>
   --readdump=<dump_file>
   --writedump=<dump_file>
+  --readwords=<word_file>
+  --writewords=<word_file>
   --color[=<color>]
   --wildcard
+  --wfileint
   --aggrsup
   --debug
   --help, -?
@@ -1256,6 +1381,12 @@ corresponds to some line pattern, and print patterns to standard output.
 For example, --input=/var/log/remote/*.log finds clusters from all files
 with the .log extension in /var/log/remote.
 This option can be specified multiple times.
+Note that special file name - means finding line patterns from data from 
+standard input, and reporting detected line patterns when EOF is read from 
+standard input. However, processing data from standard input only makes
+sense for clustering modes which involve single pass over input data. 
+For example, consider the following stream mining scenario:
+$progname --input=- --support=100 --readwords=dictionary.txt
 
 --support=<support>
 Find clusters (line patterns) that match at least <support> lines in input
@@ -1454,6 +1585,18 @@ Write clusters and frequent word dependencies to a dump file <dump_file>.
 This file can be used during later runs of the algorithm, in order to quickly
 evaluate different word weight thresholds and functions for joining clusters.
 
+--readwords=<word_file>
+Don't detect frequent words from file(s) given with --input option(s), but
+read them in from a word file <word_file>. With --wfileint option, <word_file>
+has to be in binary format previously produced with --writewords option, 
+otherwise it is assumed that <word_file> is a text file where each frequent 
+word is provided in a separate line.
+
+--writewords=<word_file>
+After frequent words have been detected, write them to <word_file>.
+With --wfileint option, <word_file> will be in binary format, otherwise 
+a text format will be used where each word is provided in a separate line.
+
 --color[=[<color1>]:[<color2>]]
 If --wweight option has been used for enabling word weight based heuristic 
 for joining clusters, words with insufficient weight are highlighted in
@@ -1466,6 +1609,15 @@ without a value, it is equivalent to --color=green:red.
 If --wweight option has been used for enabling word weight based heuristic 
 for joining clusters, words with insufficient weight in detected line patterns
 are replaced with wildcards when patterns are reported to the user.
+
+--wfileint
+If --readwords or --writewords option has been used for reading or writing
+the word file, it is assumed that the word file is in binary format.
+
+--wordsonly
+Terminate after frequent words have been detected. If --writewords option 
+is also provided, this option allows for identifying and storing frequent 
+words only, so that no extra time is spent for finding clusters.
 
 --aggrsup
 If this option is given, for each cluster candidate other candidates are
@@ -1515,9 +1667,13 @@ GetOptions( "input=s" => \@inputfilepat,
             "outliers=s" => \$outlierfile,
             "readdump=s" => \$readdump,
             "writedump=s" => \$writedump,
+            "readwords=s" => \$readwords,
+            "writewords=s" => \$writewords,
             "color:s" => \$color,
             "aggrsup" => \$aggrsup,
             "wildcard" => \$wildcard,
+            "wfileint" => \$wfileint,
+            "wordsonly" => \$wordsonly,
             "debug" => \$debug,
             "help|?" => \$help,
             "version" => \$version );
@@ -1532,7 +1688,7 @@ if (defined($help)) {
 # print the version number if requested
 
 if (defined($version)) {
-  print "LogCluster version 0.08, Copyright (C) 2015-2016 Risto Vaarandi\n";
+  print "LogCluster version 0.09, Copyright (C) 2015-2017 Risto Vaarandi\n";
   exit(0);
 }
 
@@ -1772,6 +1928,13 @@ if (defined($wsize) && $wsize < 1) {
   exit(1);
 }
 
+# exit if --wsize and --readwords options are used together
+
+if (defined($wsize) && defined($readwords)) {
+  log_msg("err", "--wsize and --readwords options can't be used together");
+  exit(1);
+}
+
 # exit if improper value is given for --csize option
 
 if (defined($csize) && $csize < 1) {
@@ -1786,6 +1949,13 @@ if (defined($csize) && defined($aggrsup)) {
   exit(1);
 }
 
+# exit if --readwords and --writewords options are used together
+
+if (defined($readwords) && defined($writewords)) {
+  log_msg("err", "--readwords and --writewords options can't be used together");
+  exit(1);
+}
+
 ##### start the clustering process #####
 
 log_msg("info", "Starting the clustering process...");
@@ -1796,9 +1966,27 @@ log_msg("info", "Starting the clustering process...");
 if (defined($wsize)) { build_word_sketch(); }
 
 # make a pass over the data set and find frequent words (words which appear 
-# in $support or more lines), and store them to %fwords hash table
+# in $support or more lines), and store them to %fwords hash table;
+# if a file is provided with the --readwords option, %fwords hash table
+# is initialized from the content of this file
 
-find_frequent_words();
+if (!defined($readwords)) {
+
+  $totalinputlines = find_frequent_words();
+
+  # if a file is provided with the --writewords option, frequent words
+  # (keys in the %fwords hash table) are written to this file
+
+  if (defined($writewords)) { write_frequent_words($totalinputlines); }
+
+} else {
+  read_frequent_words();
+}
+
+# if the --wordsonly command line option has been given, terminate without
+# detecting clusters
+
+if (defined($wordsonly)) { exit(0); }
 
 # if the --wsize command line option has been given, release the word sketch
 
