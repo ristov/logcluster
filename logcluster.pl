@@ -1,7 +1,7 @@
 #!/usr/bin/perl -w
 #
-# LogCluster 0.09 - logcluster.pl
-# Copyright (C) 2015-2017 Risto Vaarandi
+# LogCluster 0.10 - logcluster.pl
+# Copyright (C) 2015-2019 Risto Vaarandi
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -1447,7 +1447,7 @@ only lines that contain the string "192.168.<digits>.<digits>" are considered
 during clustering, and all strings "192.168.<digits>.<digits>" are replaced
 with the string "IP-address" in such lines. Longer filtering and conversion
 functions can be defined in a separate perl module. For example, with
---lcfunc='require "/home/user/TestModule.pm"; sub { TestModule::myfilter(@_); }'
+--lcfunc='require "/home/user/TestModule.pm"; sub { TestModule::myfilter(\@_); }'
 all function parameters are passed to the function myfilter() from TestModule,
 and the return value from myfilter() is used during clustering.
 This option can not be used with --lfilter option.
@@ -1689,7 +1689,7 @@ if (defined($help)) {
 # print the version number if requested
 
 if (defined($version)) {
-  print "LogCluster version 0.09, Copyright (C) 2015-2017 Risto Vaarandi\n";
+  print "LogCluster version 0.10, Copyright (C) 2015-2019 Risto Vaarandi\n";
   exit(0);
 }
 
